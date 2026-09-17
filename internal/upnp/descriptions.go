@@ -20,14 +20,7 @@ const deviceDescriptionXML = `<?xml version="1.0" encoding="UTF-8"?>
     <dlna:X_DLNADOC xmlns:dlna="urn:schemas-dlna-org:device-1-0">DMS-1.50</dlna:X_DLNADOC>
     <presentationURL>/</presentationURL>
     <iconList>
-      <icon>
-        <mimetype>image/png</mimetype>
-        <width>120</width>
-        <height>120</height>
-        <depth>32</depth>
-        <url>/icon.png</url>
-      </icon>
-    </iconList>
+{{icon}}    </iconList>
     <serviceList>
       <service>
         <serviceType>urn:schemas-upnp-org:service:ContentDirectory:1</serviceType>

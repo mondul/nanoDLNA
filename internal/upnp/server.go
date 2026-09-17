@@ -58,6 +58,9 @@ type Server struct {
 
 	ssdp *ssdpService
 
+	// icon is advertised in the device description.
+	icon deviceIcon
+
 	// GENA event subscriptions, keyed by SID.
 	subsMu sync.Mutex
 	subs   map[string]*subscription
@@ -84,12 +87,18 @@ func New(cfg Config, lib *library.Library) (*Server, error) {
 		return nil, errors.New("upnp: a media root path is required")
 	}
 
+	icon, err := loadIcon()
+	if err != nil {
+		return nil, err
+	}
+
 	s := &Server{
 		cfg:     cfg,
 		lib:     lib,
 		log:     cfg.Logger,
 		errCh:   make(chan error, 1),
 		subs:    map[string]*subscription{},
+		icon:    icon,
 		started: time.Now(),
 	}
 	if cfg.UDN != "" {
@@ -207,7 +216,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/ConnectionManager/event", s.handleEvent)
 	s.mux.HandleFunc("/media/", s.handleMedia)
 	s.mux.HandleFunc("/subs/", s.handleSubtitle)
-	s.mux.HandleFunc("/icon.png", s.handleIcon)
+	s.mux.HandleFunc(iconPath, s.handleIcon)
 	s.mux.HandleFunc("/rescan", s.handleRescan)
 	s.mux.HandleFunc("/", s.handleIndex)
 }
@@ -218,6 +227,7 @@ func (s *Server) description() []byte {
 		"version": version.Version,
 		"serial":  serialNumber(s.cfg.RootPath),
 		"udn":     s.udn,
+		"icon":    s.icon.xml(),
 	}))
 }
 

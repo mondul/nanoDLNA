@@ -26,7 +26,8 @@ var indexTemplate = template.Must(template.New("index").Parse(`<!DOCTYPE html>
 body { margin: 0; padding: 2rem 1.25rem 4rem; background: #121822; color: #e6edf3;
        font: 15px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
 main { max-width: 60rem; margin: 0 auto; }
-h1 { font-size: 1.5rem; margin: 0 0 .25rem; }
+h1 { font-size: 1.5rem; margin: 0 0 .25rem; display: flex; align-items: center; gap: .6rem; }
+h1 img { width: 32px; height: 32px; border-radius: .35rem; }
 h2 { font-size: 1.05rem; margin: 2rem 0 .75rem; color: #9fb0c3; text-transform: uppercase;
      letter-spacing: .06em; font-weight: 600; }
 a { color: #35d0c0; }
@@ -46,7 +47,7 @@ button { background: #35d0c0; color: #07211f; border: 0; border-radius: .4rem;
 </head>
 <body>
 <main>
-  <h1>{{.Name}}</h1>
+  <h1>{{if .IconURL}}<img src="{{.IconURL}}" alt="">{{end}}{{.Name}}</h1>
   <p class="sub">nanoDLNA {{.Version}} &middot; up {{.Uptime}}</p>
 
   <h2>Server</h2>
@@ -104,6 +105,7 @@ type indexView struct {
 	Stats     library.Stats
 	SSDPOn    bool
 	IfaceName string
+	IconURL   string
 	Videos    []indexVideo
 }
 
@@ -133,6 +135,7 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		Stats:     s.lib.Stats(),
 		SSDPOn:    s.ssdp != nil,
 		IfaceName: interfaceName(s.ssdpInterface()),
+		IconURL:   iconPath,
 	}
 	view.ScanTime = view.Stats.Elapsed.Round(time.Millisecond).String()
 

@@ -2,106 +2,86 @@ package upnp
 
 import (
 	"bytes"
-	"image"
-	"image/color"
-	"image/png"
-	"math"
+	_ "embed"
+	"encoding/binary"
+	"fmt"
 	"net/http"
 	"strconv"
-	"sync"
 )
 
-// The device icon is drawn at start-up rather than embedded as a binary asset,
-// which keeps the repository free of opaque files.
-const iconSize = 120
+// iconPNG is the artwork a player shows beside the server. It is embedded so
+// that the binary stays self-contained, and it is served byte for byte.
+//
+//go:embed icon.png
+var iconPNG []byte
 
-var (
-	iconOnce  sync.Once
-	iconBytes []byte
-)
+// iconPath is where the icon is served.
+//
+// This has to be a path rather than an absolute URL. VLC builds the address it
+// fetches by concatenating "scheme://host:port" with the value from the device
+// description, so an absolute URL here would produce a mangled location.
+const iconPath = "/icon.png"
 
-func deviceIcon() []byte {
-	iconOnce.Do(func() {
-		iconBytes = renderIcon(iconSize)
-	})
-	return iconBytes
+// pngSignature is the magic number that starts every PNG file.
+var pngSignature = []byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A}
+
+// deviceIcon is the icon advertised in the device description.
+type deviceIcon struct {
+	Width  int
+	Height int
+	Data   []byte
+}
+
+// loadIcon reads the dimensions of the embedded artwork, so the description
+// advertises the real size rather than a value that has to be kept in step with
+// the file by hand.
+//
+// The width and height are read straight out of the IHDR chunk instead of via
+// image.DecodeConfig. The PNG specification requires IHDR to be the first
+// chunk, so the fields sit at a fixed offset, and doing it this way keeps the
+// icon independent of which image formats some import happens to register. A
+// missing registration is invisible to the test binary, which pulls in a
+// decoder of its own, so relying on one is a trap worth avoiding.
+func loadIcon() (deviceIcon, error) {
+	const headerLen = 24
+	if len(iconPNG) < headerLen {
+		return deviceIcon{}, fmt.Errorf("the embedded icon is truncated")
+	}
+	if !bytes.Equal(iconPNG[:8], pngSignature) {
+		return deviceIcon{}, fmt.Errorf("the embedded icon is not a PNG image")
+	}
+	if string(iconPNG[12:16]) != "IHDR" {
+		return deviceIcon{}, fmt.Errorf("the embedded icon has no IHDR chunk")
+	}
+
+	width := int(binary.BigEndian.Uint32(iconPNG[16:20]))
+	height := int(binary.BigEndian.Uint32(iconPNG[20:24]))
+	if width <= 0 || height <= 0 {
+		return deviceIcon{}, fmt.Errorf("the embedded icon has no pixels")
+	}
+	return deviceIcon{Width: width, Height: height, Data: iconPNG}, nil
+}
+
+// xml renders the contents of the device description's <iconList>.
+func (i deviceIcon) xml() string {
+	return fmt.Sprintf("      <icon>\n"+
+		"        <mimetype>image/png</mimetype>\n"+
+		"        <width>%d</width>\n"+
+		"        <height>%d</height>\n"+
+		"        <depth>32</depth>\n"+
+		"        <url>%s</url>\n"+
+		"      </icon>\n", i.Width, i.Height, iconPath)
 }
 
 func (s *Server) handleIcon(w http.ResponseWriter, r *http.Request) {
 	if !allowGetHead(w, r) {
 		return
 	}
-	data := deviceIcon()
 	w.Header().Set("Content-Type", "image/png")
-	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	w.Header().Set("Content-Length", strconv.Itoa(len(s.icon.Data)))
 	w.Header().Set("Cache-Control", "public, max-age=86400")
 	if r.Method == http.MethodHead {
 		return
 	}
-	_, _ = w.Write(data)
-}
-
-// renderIcon draws a rounded dark tile with a turquoise play triangle.
-func renderIcon(size int) []byte {
-	img := image.NewRGBA(image.Rect(0, 0, size, size))
-
-	bg := color.RGBA{R: 0x12, G: 0x18, B: 0x22, A: 0xFF}
-	accent := color.RGBA{R: 0x35, G: 0xD0, B: 0xC0, A: 0xFF}
-	edge := color.RGBA{R: 0x25, G: 0x33, B: 0x45, A: 0xFF}
-
-	radius := float64(size) * 0.22
-	for y := 0; y < size; y++ {
-		for x := 0; x < size; x++ {
-			d := roundedDistance(float64(x)+0.5, float64(y)+0.5, float64(size), radius)
-			switch {
-			case d > 1.5:
-				img.Set(x, y, color.RGBA{})
-			case d > 0:
-				img.Set(x, y, edge)
-			default:
-				img.Set(x, y, bg)
-			}
-		}
-	}
-
-	// Play triangle, centred with a slight optical shift to the right.
-	cx := float64(size) * 0.40
-	cy := float64(size) * 0.5
-	half := float64(size) * 0.22
-	left := cx - half*0.85
-	right := cx + half*1.05
-	for y := 0; y < size; y++ {
-		for x := 0; x < size; x++ {
-			fx, fy := float64(x)+0.5, float64(y)+0.5
-			if fx < left || fx > right {
-				continue
-			}
-			t := (fx - left) / (right - left)
-			allowed := half * (1 - t)
-			if math.Abs(fy-cy) <= allowed {
-				img.Set(x, y, accent)
-			}
-		}
-	}
-
-	var buf bytes.Buffer
-	if err := png.Encode(&buf, img); err != nil {
-		return nil
-	}
-	return buf.Bytes()
-}
-
-// roundedDistance returns a signed distance from the rounded-rectangle border:
-// negative inside, positive outside, in pixels.
-func roundedDistance(x, y, size, radius float64) float64 {
-	half := size / 2
-	dx := math.Abs(x-half) - (half - radius)
-	dy := math.Abs(y-half) - (half - radius)
-	if dx < 0 {
-		dx = 0
-	}
-	if dy < 0 {
-		dy = 0
-	}
-	return math.Hypot(dx, dy) - radius
+	_, _ = w.Write(s.icon.Data)
 }
