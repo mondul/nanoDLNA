@@ -54,6 +54,23 @@ func readVersion(ctx context.Context, path string) string {
 	return strings.TrimSpace(first)
 }
 
+// Short is the version in a few words, for places with no room for the banner
+// ffmpeg prints, which runs to a copyright notice and a build configuration.
+func (t *Tool) Short() string {
+	if t == nil {
+		return "not found"
+	}
+	// "ffprobe version 9.0.1 Copyright (c) 2007-2026 ..." becomes "ffprobe 9.0.1".
+	fields := strings.Fields(t.Version)
+	if len(fields) >= 3 && fields[1] == "version" {
+		return fields[0] + " " + fields[2]
+	}
+	if t.Version == "" {
+		return t.Name
+	}
+	return t.Version
+}
+
 // Set is what was found on this machine.
 type Set struct {
 	FFprobe *Tool

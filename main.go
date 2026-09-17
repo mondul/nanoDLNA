@@ -29,7 +29,10 @@ import (
 	"syscall"
 	"time"
 
+	"nanodlna/internal/cache"
 	"nanodlna/internal/library"
+	"nanodlna/internal/probe"
+	"nanodlna/internal/thumb"
 	"nanodlna/internal/tools"
 	"nanodlna/internal/upnp"
 	"nanodlna/internal/version"
@@ -43,15 +46,22 @@ func main() {
 }
 
 type options struct {
-	dir      string
-	name     string
-	port     int
-	iface    string
-	subLang  string
-	charset  string
-	logLevel string
-	noSSDP   bool
-	showVer  bool
+	dir          string
+	name         string
+	port         int
+	iface        string
+	subLang      string
+	charset      string
+	cache        string
+	validate     string
+	probeTimeout time.Duration
+	revalidate   bool
+	thumbnails   string
+	thumbSize    int
+	thumbPos     int
+	logLevel     string
+	noSSDP       bool
+	showVer      bool
 }
 
 func run(args []string) error {
@@ -96,11 +106,66 @@ func run(args []string) error {
 
 	name := deviceName(opts.name, logger)
 
+	level, err := probe.ParseLevel(opts.validate)
+	if err != nil {
+		return err
+	}
+
+	cacheDir := opts.cache
+	if cacheDir == "" {
+		cacheDir, err = cache.Dir(root)
+		if err != nil {
+			logger.Warn("cannot locate a cache directory, so results will not be remembered", "err", err)
+			cacheDir = ""
+		} else {
+			logger.Debug("using cache directory", "path", cacheDir)
+		}
+	}
+
+	var store *probe.Store
+	if cacheDir != "" {
+		store = probe.OpenStore(filepath.Join(cacheDir, "probe.json"), logger)
+	}
+
+	prober := probe.New(probe.Config{
+		Level:      level,
+		Probe:      external.FFprobe,
+		Decode:     external.FFmpeg,
+		Store:      store,
+		Timeout:    opts.probeTimeout,
+		Revalidate: opts.revalidate,
+		Logger:     logger,
+	})
+
+	// probe and library know nothing about each other, so the translation from
+	// one package's verdict to the other's lives here.
+	var validate library.Validator
+	if prober.Level() != probe.Off {
+		validate = func(path string, size int64, mod time.Time) library.Verdict {
+			v := prober.Check(path, size, mod)
+			return library.Verdict{
+				Serve:    v.Serve,
+				Reason:   v.Reason,
+				Duration: v.Duration,
+				Width:    v.Width,
+				Height:   v.Height,
+			}
+		}
+	}
+
 	lib := library.New(root, library.Options{
-		Name:    name,
-		SubLang: splitList(opts.subLang),
-		Workers: runtime.NumCPU(),
-		Logger:  logger,
+		Name:     name,
+		SubLang:  splitList(opts.subLang),
+		Workers:  runtime.NumCPU(),
+		Logger:   logger,
+		Validate: validate,
+		// Saved here rather than after the first scan only, because the web
+		// page's rescan goes through the same path.
+		AfterScan: func() {
+			if err := prober.Save(); err != nil {
+				logger.Warn("cannot save the validation cache", "err", err)
+			}
+		},
 	})
 
 	logger.Info("scanning media folder", "path", root)
@@ -112,7 +177,31 @@ func run(args []string) error {
 		"videos", stats.Videos,
 		"folders", stats.Containers,
 		"subtitles", stats.Subtitles,
+		"held_back", stats.Rejected,
 		"took", stats.Elapsed.Round(time.Millisecond))
+
+	if stats.Rejected > 0 {
+		logger.Warn("some files could not be read and will not be served",
+			"count", stats.Rejected, "see", "the web page")
+	}
+
+	thumbs := thumb.New(thumb.Config{
+		Tool:   external.FFmpeg,
+		Dir:    cacheDir,
+		Size:   opts.thumbSize,
+		Pos:    opts.thumbPos,
+		Logger: logger,
+	})
+	if thumbnailsWanted(opts.thumbnails) && !thumbs.Available() {
+		logger.Warn("thumbnails are on but ffmpeg was not found, so no artwork will be offered")
+	}
+	if !thumbnailsWanted(opts.thumbnails) {
+		thumbs = thumb.New(thumb.Config{Logger: logger})
+	}
+	if thumbs.Available() && cacheDir == "" {
+		logger.Warn("thumbnails need somewhere to cache their output; none is available")
+		thumbs = thumb.New(thumb.Config{Logger: logger})
+	}
 
 	srv, err := upnp.New(upnp.Config{
 		Name:            name,
@@ -122,6 +211,7 @@ func run(args []string) error {
 		Logger:          logger,
 		SubtitleCharset: opts.charset,
 		DisableSSDP:     opts.noSSDP,
+		Thumbnails:      thumbs,
 	}, lib)
 	if err != nil {
 		return err
@@ -146,6 +236,7 @@ func run(args []string) error {
 			Logger:          logger,
 			SubtitleCharset: opts.charset,
 			DisableSSDP:     opts.noSSDP,
+			Thumbnails:      thumbs,
 		}, lib)
 		if ferr != nil {
 			return err
@@ -156,7 +247,14 @@ func run(args []string) error {
 		}
 	}
 
-	printBanner(srv, root, stats, name, opts.noSSDP, logger)
+	printBanner(srv, stats, bannerInfo{
+		Name:       name,
+		Root:       root,
+		NoSSDP:     opts.noSSDP,
+		Validation: validationSummary(prober.Level(), external.FFprobe),
+		Thumbnails: thumbnailSummary(thumbs, opts.thumbSize, opts.thumbPos),
+		CacheDir:   cacheDir,
+	}, logger)
 
 	select {
 	case <-ctx.Done():
@@ -180,6 +278,13 @@ func parseFlags(args []string) (options, bool, error) {
 	fs.StringVar(&opts.iface, "iface", "", "network interface name or local IP address to advertise (default: auto)")
 	fs.StringVar(&opts.subLang, "sub-lang", "", "preferred subtitle languages, most preferred first, for example \"it,en\"")
 	fs.StringVar(&opts.charset, "charset", "auto", "subtitle text encoding: auto, utf-8, cp1252 or latin1")
+	fs.StringVar(&opts.validate, "validate", "container", "check files with ffprobe before serving them: off, container or content")
+	fs.StringVar(&opts.cache, "cache", "", "where to keep validation results and thumbnails (default: ~/.nanoDLNA/cache)")
+	fs.DurationVar(&opts.probeTimeout, "validate-timeout", 20*time.Second, "how long a single ffprobe or ffmpeg run may take")
+	fs.BoolVar(&opts.revalidate, "revalidate", false, "check every file again, ignoring cached results")
+	fs.StringVar(&opts.thumbnails, "thumbnails", "on", "generate artwork for videos with ffmpeg: on or off")
+	fs.IntVar(&opts.thumbSize, "thumb-size", 256, "edge length of the square thumbnails")
+	fs.IntVar(&opts.thumbPos, "thumb-pos", 25, "where in a video to take the thumbnail, as a percentage of its duration")
 	fs.StringVar(&opts.logLevel, "log", "info", "log level: debug, info, warn or error")
 	fs.BoolVar(&opts.noSSDP, "no-ssdp", false, "do not advertise the server with SSDP discovery")
 	fs.BoolVar(&opts.showVer, "version", false, "print the version and exit")
@@ -335,6 +440,36 @@ func isAddrInUse(err error) bool {
 // make it fail without needing a machine whose host name is broken.
 var hostname = os.Hostname
 
+// thumbnailsWanted reads the -thumbnails flag. Anything that is not clearly
+// "off" leaves them on, so a typo does not silently disable a feature.
+func thumbnailsWanted(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "off", "false", "no", "0", "none":
+		return false
+	default:
+		return true
+	}
+}
+
+// validationSummary describes what checking is in force.
+func validationSummary(level probe.Level, ffprobe *tools.Tool) string {
+	if level == probe.Off {
+		if ffprobe == nil {
+			return "off (ffprobe not found)"
+		}
+		return "off"
+	}
+	return fmt.Sprintf("%s (%s)", level, ffprobe.Short())
+}
+
+// thumbnailSummary describes the artwork that will be offered.
+func thumbnailSummary(maker *thumb.Maker, size, pos int) string {
+	if !maker.Available() {
+		return "off (ffmpeg not found)"
+	}
+	return fmt.Sprintf("%dx%d at %d%% of the video", size, size, pos)
+}
+
 // describeTool renders a detected program for a log line.
 func describeTool(t *tools.Tool) string {
 	if t == nil {
@@ -369,21 +504,39 @@ func deviceName(custom string, logger *slog.Logger) string {
 	return fmt.Sprintf("%s [%s]", version.Name, host)
 }
 
-func printBanner(srv *upnp.Server, root string, stats library.Stats, name string, noSSDP bool, logger *slog.Logger) {
+// bannerInfo is everything the start-up banner reports about the configuration.
+type bannerInfo struct {
+	Name       string
+	Root       string
+	NoSSDP     bool
+	Validation string
+	Thumbnails string
+	CacheDir   string
+}
+
+func printBanner(srv *upnp.Server, stats library.Stats, info bannerInfo, logger *slog.Logger) {
 	base := srv.BaseURL()
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "\n  %s %s\n", version.Name, version.Version)
 	fmt.Fprintf(&b, "  %s\n\n", strings.Repeat("\u2500", 46))
-	fmt.Fprintf(&b, "  Media folder  %s\n", root)
-	fmt.Fprintf(&b, "  Device name   %s\n", name)
+	fmt.Fprintf(&b, "  Media folder  %s\n", info.Root)
+	fmt.Fprintf(&b, "  Device name   %s\n", info.Name)
 	fmt.Fprintf(&b, "  Library       %d videos, %d folders, %d subtitles\n",
 		stats.Videos, stats.Containers, stats.Subtitles)
+	if stats.Rejected > 0 {
+		fmt.Fprintf(&b, "                %d held back, see the web page\n", stats.Rejected)
+	}
 	fmt.Fprintf(&b, "  Address       %s\n", base)
-	if noSSDP {
+	if info.NoSSDP {
 		fmt.Fprintf(&b, "  Discovery     SSDP disabled\n")
 	} else {
 		fmt.Fprintf(&b, "  Discovery     SSDP multicast, port 1900\n")
+	}
+	fmt.Fprintf(&b, "  Validation    %s\n", info.Validation)
+	fmt.Fprintf(&b, "  Thumbnails    %s\n", info.Thumbnails)
+	if info.CacheDir != "" {
+		fmt.Fprintf(&b, "  Cache         %s\n", info.CacheDir)
 	}
 	fmt.Fprintf(&b, "  Device UUID   %s\n\n", srv.UDN())
 
@@ -392,7 +545,7 @@ func printBanner(srv *upnp.Server, root string, stats library.Stats, name string
 		fmt.Fprintf(&b, "  \"Rescan folder\" on the web page below.\n\n")
 	}
 
-	fmt.Fprintf(&b, "  On the TV      VLC \u2192 Local Network \u2192 %s\n", name)
+	fmt.Fprintf(&b, "  On the TV      VLC \u2192 Local Network \u2192 %s\n", info.Name)
 	fmt.Fprintf(&b, "  Web page       %s\n", base)
 	fmt.Fprintf(&b, "  Stop           Ctrl+C\n\n")
 

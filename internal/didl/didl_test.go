@@ -385,3 +385,70 @@ func TestSubtitleProtocolInfoAlwaysText(t *testing.T) {
 		}
 	}
 }
+
+// TestArtworkIsAdvertisedBothWays covers the two conventions clients use: VLC
+// reads upnp:albumArtURI when it is present and falls back to an image resource
+// otherwise, so both point at the same URL.
+func TestArtworkIsAdvertisedBothWays(t *testing.T) {
+	doc := Document([]Object{{
+		ID: "4", ParentID: "1", Title: "A Film", Class: ClassVideo, IsItem: true,
+		ArtworkURL: "http://host:8200/thumb/4.jpg",
+		Resources: []Resource{{
+			URL:          "http://host:8200/media/4/film.mkv",
+			ProtocolInfo: VideoProtocolInfo("video/x-matroska"),
+		}},
+	}})
+
+	for _, want := range []string{
+		`<upnp:albumArtURI dlna:profileID="JPEG_TN">http://host:8200/thumb/4.jpg</upnp:albumArtURI>`,
+		`<res protocolInfo="http-get:*:image/jpeg:*">http://host:8200/thumb/4.jpg</res>`,
+	} {
+		if !strings.Contains(doc, want) {
+			t.Errorf("document is missing %s", want)
+		}
+	}
+
+	// The playable resource has to stay first: clients that take the first res
+	// as the thing to play must not be handed the picture.
+	video := strings.Index(doc, "video/x-matroska")
+	image := strings.Index(doc, "image/jpeg")
+	if video < 0 || image < 0 || video > image {
+		t.Errorf("the video resource does not precede the artwork (video=%d image=%d)", video, image)
+	}
+
+	if err := xml.Unmarshal([]byte(doc), new(any)); err != nil {
+		t.Fatalf("artwork broke the document: %v", err)
+	}
+}
+
+func TestNoArtworkElementsWithoutAURL(t *testing.T) {
+	doc := Document([]Object{{
+		ID: "4", ParentID: "1", Title: "A Film", Class: ClassVideo, IsItem: true,
+		Resources: []Resource{{
+			URL:          "http://host:8200/media/4/film.mkv",
+			ProtocolInfo: VideoProtocolInfo("video/x-matroska"),
+		}},
+	}})
+	for _, unwanted := range []string{"albumArtURI", "image/"} {
+		if strings.Contains(doc, unwanted) {
+			t.Errorf("a video with no artwork emitted %q: %s", unwanted, doc)
+		}
+	}
+}
+
+func TestArtworkURLIsEscaped(t *testing.T) {
+	doc := Document([]Object{{
+		ID: "4", ParentID: "1", Title: "A Film", Class: ClassVideo, IsItem: true,
+		ArtworkURL: "http://host:8200/thumb/a&b.jpg",
+		Resources: []Resource{{
+			URL:          "http://host:8200/media/4/film.mkv",
+			ProtocolInfo: VideoProtocolInfo("video/x-matroska"),
+		}},
+	}})
+	if strings.Contains(doc, "a&b.jpg") {
+		t.Error("the artwork URL was not escaped")
+	}
+	if err := xml.Unmarshal([]byte(doc), new(any)); err != nil {
+		t.Fatalf("an ampersand in the artwork URL broke the document: %v", err)
+	}
+}

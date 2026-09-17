@@ -17,6 +17,11 @@ func (s *Server) mediaURL(base string, n *library.Node) string {
 	return base + "/media/" + strconv.Itoa(n.ID) + "/" + url.PathEscape(filepath.Base(n.Path))
 }
 
+// thumbnailURL is the HTTP location of a video's artwork.
+func thumbnailURL(base string, n *library.Node) string {
+	return base + "/thumb/" + strconv.Itoa(n.ID) + ".jpg"
+}
+
 // subtitleURL is the HTTP location of one of a video's subtitle tracks.
 func (s *Server) subtitleURL(base string, v *library.Node, index int, sub library.Subtitle) string {
 	return base + "/subs/" + strconv.Itoa(v.ID) + "/" + strconv.Itoa(index) + "/" + url.PathEscape(sub.Name)
@@ -39,6 +44,9 @@ func (s *Server) didlObject(base string, n *library.Node) didl.Object {
 
 	obj.Class = didl.ClassVideo
 	obj.IsItem = true
+	if s.cfg.Thumbnails.Available() {
+		obj.ArtworkURL = thumbnailURL(base, n)
+	}
 	for i, sub := range n.Subs {
 		obj.Subtitles = append(obj.Subtitles, didl.Subtitle{
 			URL:  s.subtitleURL(base, n, i, sub),

@@ -128,3 +128,21 @@ func TestDetectReportsBothPrograms(t *testing.T) {
 		t.Errorf("ffmpeg Version = %q", set.FFmpeg.Version)
 	}
 }
+
+func TestShortVersionForDisplay(t *testing.T) {
+	for _, tc := range []struct {
+		what string
+		tool *Tool
+		want string
+	}{
+		{"a full banner", &Tool{Name: "ffprobe", Version: "ffprobe version 9.0.1 Copyright (c) 2007-2026 the FFmpeg developers"}, "ffprobe 9.0.1"},
+		{"a bare version", &Tool{Name: "ffmpeg", Version: "ffmpeg version 6.1"}, "ffmpeg 6.1"},
+		{"no version at all", &Tool{Name: "ffmpeg"}, "ffmpeg"},
+		{"something unexpected", &Tool{Name: "x", Version: "hello"}, "hello"},
+		{"missing tool", nil, "not found"},
+	} {
+		if got := tc.tool.Short(); got != tc.want {
+			t.Errorf("%s: Short() = %q, want %q", tc.what, got, tc.want)
+		}
+	}
+}

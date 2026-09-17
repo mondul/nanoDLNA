@@ -162,3 +162,43 @@ func readLimited(path string, limit int64) ([]byte, error) {
 	}
 	return io.ReadAll(io.LimitReader(f, limit))
 }
+
+// handleThumbnail serves the artwork for a video, producing it on first request.
+//
+// A video that cannot be turned into a picture is not an error worth surfacing
+// to the player: the item simply has no artwork, which every client copes with.
+func (s *Server) handleThumbnail(w http.ResponseWriter, r *http.Request) {
+	if !allowGetHead(w, r) {
+		return
+	}
+	id, ok := firstPathSegment(r.URL.Path, "/thumb/")
+	if !ok {
+		http.NotFound(w, r)
+		return
+	}
+	node := s.nodeForObjectID(strings.TrimSuffix(id, ".jpg"))
+	if node == nil || node.Kind != library.KindVideo || !s.cfg.Thumbnails.Available() {
+		http.NotFound(w, r)
+		return
+	}
+
+	data, err := s.cfg.Thumbnails.Get(node.Path, node.Size, node.ModTime, node.Info.Duration)
+	if err != nil {
+		s.log.Debug("cannot produce a thumbnail", "title", node.Title, "err", err)
+		http.Error(w, "no thumbnail available", http.StatusNotFound)
+		return
+	}
+
+	h := w.Header()
+	h.Set("Content-Type", "image/jpeg")
+	h.Set("Content-Length", strconv.Itoa(len(data)))
+	h.Set("Cache-Control", "public, max-age=86400")
+
+	s.log.Debug("serving a thumbnail",
+		"title", node.Title, "bytes", len(data), "remote", r.RemoteAddr)
+
+	if r.Method == http.MethodHead {
+		return
+	}
+	_, _ = w.Write(data)
+}

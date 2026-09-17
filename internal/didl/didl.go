@@ -85,6 +85,11 @@ type Object struct {
 	// Item fields.
 	Resources []Resource
 	Subtitles []Subtitle
+	// ArtworkURL is the picture a player shows beside the item. It is
+	// advertised twice, as upnp:albumArtURI and as an image resource, because
+	// clients differ in which of the two they read: VLC takes the element when
+	// it is present and otherwise falls back to the resource.
+	ArtworkURL string
 	// Container field.
 	ChildCount int
 	IsItem     bool
@@ -126,9 +131,19 @@ func (o Object) render(b *strings.Builder) {
 	if !o.Date.IsZero() {
 		b.WriteString("<dc:date>" + o.Date.UTC().Format("2006-01-02T15:04:05") + "</dc:date>")
 	}
+	if o.IsItem && o.ArtworkURL != "" {
+		// JPEG_TN is the DLNA profile name for a JPEG thumbnail.
+		b.WriteString(`<upnp:albumArtURI dlna:profileID="JPEG_TN">` +
+			escapeText(o.ArtworkURL) + `</upnp:albumArtURI>`)
+	}
 
 	for _, r := range o.Resources {
 		renderResource(b, r)
+	}
+
+	if o.IsItem && o.ArtworkURL != "" {
+		b.WriteString(`<res protocolInfo="http-get:*:image/jpeg:*">` +
+			escapeText(o.ArtworkURL) + `</res>`)
 	}
 
 	if o.IsItem && len(o.Subtitles) > 0 {

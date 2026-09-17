@@ -55,7 +55,7 @@ button { background: #35d0c0; color: #07211f; border: 0; border-radius: .4rem;
     <dt>Address</dt><dd><a href="{{.BaseURL}}">{{.BaseURL}}</a></dd>
     <dt>Media folder</dt><dd><code>{{.RootPath}}</code></dd>
     <dt>Device UUID</dt><dd><code>{{.UDN}}</code></dd>
-    <dt>Library</dt><dd>{{.Stats.Videos}} videos in {{.Stats.Containers}} folders, {{.Stats.Subtitles}} subtitles</dd>
+    <dt>Library</dt><dd>{{.Stats.Videos}} videos in {{.Stats.Containers}} folders, {{.Stats.Subtitles}} subtitles{{if .Stats.Rejected}}, {{.Stats.Rejected}} held back</dd>{{end}}
     <dt>Discovery</dt><dd>{{if .SSDPOn}}SSDP advertising on {{.IfaceName}}{{else}}disabled{{end}}</dd>
     <dt>Scanned in</dt><dd>{{.ScanTime}}</dd>
   </dl>
@@ -81,6 +81,25 @@ button { background: #35d0c0; color: #07211f; border: 0; border-radius: .4rem;
   <p class="empty">No videos found in this folder yet. Drop some .mp4 or .mkv files next to
   nanoDLNA and press &ldquo;Rescan folder&rdquo;.</p>
   {{end}}
+
+  {{if .Rejected}}
+  <h2>Not ready</h2>
+  <p class="sub">These files were found but could not be read, so they are not offered to
+  the television. A file that is still downloading appears here until it is complete; press
+  &ldquo;Rescan folder&rdquo; once it has finished.</p>
+  <table>
+    <thead><tr><th>Title</th><th>Details</th><th>Reason</th></tr></thead>
+    <tbody>
+    {{range .Rejected}}
+      <tr>
+        <td>{{.Title}}<div class="sub">{{.Rel}}</div></td>
+        <td class="sub">{{.Details}}</td>
+        <td class="sub">{{.Reason}}</td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{end}}
 </main>
 </body>
 </html>
@@ -92,6 +111,13 @@ type indexVideo struct {
 	Details  string
 	Subs     []string
 	MediaURL string
+}
+
+type indexRejected struct {
+	Title   string
+	Rel     string
+	Details string
+	Reason  string
 }
 
 type indexView struct {
@@ -107,6 +133,7 @@ type indexView struct {
 	IfaceName string
 	IconURL   string
 	Videos    []indexVideo
+	Rejected  []indexRejected
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
@@ -152,6 +179,15 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		view.Videos = append(view.Videos, row)
 	}
 
+	for _, r := range s.lib.Rejected() {
+		view.Rejected = append(view.Rejected, indexRejected{
+			Title:   r.Title,
+			Rel:     library.DisplayPath(rootPath, r.Path),
+			Details: describeRejected(r),
+			Reason:  r.Reason,
+		})
+	}
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	if r.Method == http.MethodHead {
 		return
@@ -191,6 +227,36 @@ func (s *Server) ssdpInterface() *net.Interface {
 		return nil
 	}
 	return s.ssdp.iface
+}
+
+// describeRejected renders the size and age of a file that is being held back,
+// which is what tells a person whether a download is still moving.
+func describeRejected(r library.Rejected) string {
+	parts := make([]string, 0, 2)
+	if r.Size > 0 {
+		parts = append(parts, humanSize(r.Size))
+	}
+	if !r.ModTime.IsZero() {
+		parts = append(parts, "changed "+formatAge(time.Since(r.ModTime)))
+	}
+	if len(parts) == 0 {
+		return "\u2014"
+	}
+	return strings.Join(parts, " \u00b7 ")
+}
+
+// formatAge renders how long ago something happened, coarsely.
+func formatAge(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 48*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	default:
+		return fmt.Sprintf("%dd ago", int(d.Hours()/24))
+	}
 }
 
 // describeVideo renders the size, duration and resolution of a video.

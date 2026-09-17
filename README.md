@@ -57,6 +57,20 @@ the release. A plain `go build` produces a binary reporting the development
 default from `internal/version/version.go`, which is not the tag, and that is
 easy to mistake for a stale build.
 
+**On Windows, use GNU make** — `mingw32-make` from MSYS2, or `make` from
+Chocolatey — and not the `nmake` that ships with Visual Studio. The Makefile
+uses GNU syntax throughout (`$(shell)`, `ifeq`, `.PHONY`, and the `$(word)`,
+`$(subst)` and `$(if)` functions), which `nmake` does not understand, so it
+fails at the version line before building anything. If you would rather not
+install make at all, the whole of `make build` is this one command:
+
+```sh
+go build -trimpath -ldflags "-s -w -X nanodlna/internal/version.Version=1.2.3" .
+```
+
+Nothing in the release pipeline uses the Makefile, so this only affects building
+by hand.
+
 ## How the subtitles work
 
 This is the part that most simple DLNA servers get wrong, so it is worth
@@ -146,6 +160,13 @@ nanoDLNA [options] [folder]
   -iface string      network interface name or local IP to advertise
   -sub-lang string   preferred subtitle languages, e.g. "it,en"
   -charset string    subtitle encoding: auto, utf-8, cp1252, latin1
+  -validate string   check files before serving them: off, container, content
+  -revalidate        check every file again, ignoring cached results
+  -validate-timeout  how long one ffprobe or ffmpeg run may take (default 20s)
+  -thumbnails string artwork for videos: on or off (default on with ffmpeg)
+  -thumb-size int    edge length of the square thumbnails (default 256)
+  -thumb-pos int     where to take the thumbnail, as a percentage (default 25)
+  -cache string      where validation results and thumbnails are kept
   -log string        log level: debug, info, warn, error (default "info")
   -no-ssdp           do not advertise with SSDP discovery
   -version           print the version and exit
@@ -170,6 +191,77 @@ There is also a small web page on the printed address, which lists every video
 with its subtitles, links directly to the streams, and has a **Rescan folder**
 button for when you add films while the server is running.
 
+## Checking files before serving them
+
+A torrent client reserves the full space for a file the moment it starts, so a
+film that is 2% downloaded looks complete to a directory listing. nanoDLNA asks
+`ffprobe` whether each file can actually be read, and hides the ones that cannot
+so the television never offers something that will fail on play.
+
+`ffprobe` and `ffmpeg` are both optional. With neither installed nothing is
+checked and every file is served, which is exactly how nanoDLNA behaved before.
+The start-up banner says which of the three levels is in force:
+
+```
+  Validation    container (ffprobe 9.0.1)
+  Thumbnails    256x256 at 25% of the video
+  Cache         /Users/you/.nanoDLNA/cache/2f1c8a4b9d3e6f70
+```
+
+| Level | What it does | Catches |
+| --- | --- | --- |
+| `off` | nothing | — |
+| `container` | reads the file's headers | a reserved file, a missing index, a file that is not video at all |
+| `content` | also decodes a frame at 25% and at 95% | **plus a half-downloaded web-optimised MP4** |
+
+**`container` is the default, and it has a blind spot worth understanding.** A
+web-optimised MP4 keeps its index at the front, so `ffprobe` reads it happily
+from the first pieces that arrive and reports a full duration for a file whose
+payload stops a third of the way in. Only `content` catches that, at the cost of
+two more ffmpeg runs per file — measured at about 140 ms each, against 110 ms for
+the probe itself.
+
+Files that are hidden are listed on the web page under **Not ready**, with the
+reason `ffprobe` gave, so a stalled download can be told apart from a file that
+will never work:
+
+```
+Not ready
+  Downloading.mp4   59.5 KB · changed just now   Invalid data found when processing input
+```
+
+Answers are cached under `~/.nanoDLNA/cache/<hash of the media folder>/probe.json`
+on Unix, and `%USERPROFILE%\.nanoDLNA\cache\<hash>\` on Windows. An entry is
+reused only while the file's size and modification time are unchanged. **A
+refusal is never reused**: it is exactly the state a download changes, so every
+rescan tries the files that were held back again. Press **Rescan folder** once a
+download finishes and the film appears.
+
+When `ffprobe` is available its duration and resolution are used in place of
+nanoDLNA's own container parsing, which is both more accurate and cheaper.
+
+## Thumbnails
+
+With `ffmpeg` installed each video is given a picture, taken a quarter of the way
+in, scaled to fill a 256×256 square and centre-cropped so it fills the frame
+rather than sitting in a letterbox. Players show it beside the item; VLC reads it
+from the `upnp:albumArtURI` element, and the same URL is offered as an image
+resource for clients that look there instead.
+
+Thumbnails are made **on demand and kept on disk**, so a film nobody browses
+never costs anything and a second look is instant. Making one costs about
+140 ms per video on this machine, measured on a local drive.
+
+```
+  -thumbnails off           # turn them off
+  -thumb-size 120           # a different square
+  -thumb-pos 50             # halfway in, rather than a quarter
+```
+
+The name of a cached thumbnail carries the source's size and modification time,
+so a video that changes is given a new picture rather than being served a stale
+one, and asking whether one exists is a single `stat` with no index to consult.
+
 ## Troubleshooting
 
 **The television does not list the server.**
@@ -183,6 +275,12 @@ address on another device to confirm the server is reachable.
 `-log debug` prints every request the television makes. If nothing arrives when
 you press play, the TV is refusing the file rather than failing to fetch it; the
 usual cause is a codec the player cannot decode.
+
+**A film is missing from the list.** It is being held back because `ffprobe`
+could not read it. The web page lists every such file under **Not ready** with
+the reason, which is usually `moov atom not found` on a download that has not
+finished. Press **Rescan folder** once it has. If a file that plays fine is being
+held back, set `-validate off` and restart.
 
 **No subtitles appear in the menu.**
 Check the web page: if a video lists no subtitles there, the file name did not
@@ -239,6 +337,8 @@ internal/library    filesystem scan, tree building, subtitle matching
 internal/didl       DIDL-Lite generation
 internal/upnp       SSDP, HTTP, SOAP, GENA, media and subtitle serving
 internal/tools      detection of the optional ffmpeg and ffprobe
+internal/probe      checking files with ffprobe, and remembering the answers
+internal/thumb      thumbnails made with ffmpeg
 internal/cache      on-disk cache for work that is expensive to redo
 internal/version    program identity
 scripts/            commit linting and release tooling

@@ -101,6 +101,16 @@ type Node struct {
 	Ext  string
 	Info avmeta.Info
 	Subs []Subtitle
+
+	// rejected records that a Validator refused this video, and rejectReason
+	// says why. Rejected videos are removed before the tree is published, so
+	// nothing outside a scan sees a node with this set.
+	//
+	// The flag is separate from the reason on purpose: a Validator is allowed
+	// to refuse without explaining itself, and using the reason as the flag
+	// would quietly serve such a file.
+	rejected     bool
+	rejectReason string
 }
 
 // Options configures a Library.
@@ -115,6 +125,13 @@ type Options struct {
 	Workers int
 	// MaxDepth limits how deep the tree is walked. Zero means unlimited.
 	MaxDepth int
+	// Validate decides whether each video may be served. A nil Validator serves
+	// every file, which is what happens when ffprobe is not installed.
+	Validate Validator
+	// AfterScan runs once a scan has been published, which is where a Validator
+	// that remembers its answers persists them. It covers the rescan triggered
+	// from the web page as well as the first scan, since both come through here.
+	AfterScan func()
 	// Logger receives scan diagnostics. Nil means slog.Default().
 	Logger *slog.Logger
 }
@@ -126,8 +143,40 @@ type Stats struct {
 	Subtitles  int
 	Skipped    int
 	Errors     int
-	Elapsed    time.Duration
+	// Rejected counts the videos a Validator refused, which are not in the tree.
+	Rejected int
+	Elapsed  time.Duration
 }
+
+// Rejected is a video that was not served because it could not be read.
+type Rejected struct {
+	Title   string
+	Path    string
+	Size    int64
+	ModTime time.Time
+	Reason  string
+}
+
+// Verdict is what a Validator decided about one file.
+type Verdict struct {
+	// Serve is false when the file must not be offered to a player.
+	Serve bool
+	// Reason explains a refusal, in the validator's own words, and is shown on
+	// the web page so the cause is visible without digging through logs.
+	Reason string
+	// Duration, Width and Height are used in place of probing the file again
+	// when the Validator supplied them. Zero means unknown.
+	Duration time.Duration
+	Width    int
+	Height   int
+}
+
+// Validator decides whether a file may be served.
+//
+// It is called for every video on every scan and is expected to remember what
+// it already knows, which is why the file's size and modification time are
+// passed in.
+type Validator func(path string, size int64, mod time.Time) Verdict
 
 // Library is a concurrency-safe index of the media tree.
 type Library struct {
@@ -139,6 +188,7 @@ type Library struct {
 	root     *Node
 	byID     map[int]*Node
 	stats    Stats
+	rejected []Rejected
 	updateID uint32
 	scans    int
 }
@@ -194,6 +244,16 @@ func (l *Library) Stats() Stats {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 	return l.stats
+}
+
+// Rejected returns the videos that were walked but not served, in browse order,
+// each with the reason it was refused. They are not in the tree.
+func (l *Library) Rejected() []Rejected {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	out := make([]Rejected, len(l.rejected))
+	copy(out, l.rejected)
+	return out
 }
 
 // Videos returns every video in the tree in browse order.
@@ -259,13 +319,16 @@ func (l *Library) Scan() (Stats, error) {
 
 	b.walk(b.root, 0)
 
-	// Videos are probed concurrently, so the tree must be complete and pruned
-	// first: containers that end up holding no videos are dropped so that the
-	// user does not see empty folders on the TV.
-	b.prune(b.root)
-	b.containers = countContainers(b.root)
-	b.sortTree(b.root)
+	// Validation runs before pruning, because a refusal can empty a folder just
+	// as surely as the folder holding nothing to begin with.
 	b.probeAll()
+	b.dropRejected()
+	b.prune(b.root)
+
+	b.containers = countContainers(b.root)
+	b.videos = countVideos(b.root)
+	b.subtitles = countSubtitles(b.root)
+	b.sortTree(b.root)
 
 	stats := Stats{
 		Containers: b.containers,
@@ -273,6 +336,7 @@ func (l *Library) Scan() (Stats, error) {
 		Subtitles:  b.subtitles,
 		Skipped:    b.skipped,
 		Errors:     b.errors,
+		Rejected:   len(b.rejected),
 		Elapsed:    time.Since(started),
 	}
 
@@ -280,9 +344,14 @@ func (l *Library) Scan() (Stats, error) {
 	l.root = b.root
 	l.byID = b.byID
 	l.stats = stats
+	l.rejected = b.rejected
 	l.scans++
 	l.updateID = uint32(l.scans)
 	l.mu.Unlock()
+
+	if l.opts.AfterScan != nil {
+		l.opts.AfterScan()
+	}
 
 	return stats, nil
 }
@@ -300,6 +369,7 @@ type builder struct {
 	subtitles  int
 	skipped    int
 	errors     int
+	rejected   []Rejected
 }
 
 func (b *builder) allocID(n *Node) int {
@@ -484,7 +554,8 @@ func (b *builder) sortTree(n *Node) {
 	}
 }
 
-// probeAll fills in container metadata for every video using a worker pool.
+// probeAll fills in container metadata for every video, using a worker pool,
+// and marks the ones a Validator refuses.
 func (b *builder) probeAll() {
 	var nodes []*Node
 	var collect func(*Node)
@@ -514,15 +585,7 @@ func (b *builder) probeAll() {
 		go func() {
 			defer wg.Done()
 			for n := range jobs {
-				n.Info = avmeta.ProbeFile(n.Path)
-				if n.Info.Duration == 0 && n.Info.Width == 0 {
-					b.lib.log.Debug("no container metadata", "path", n.Path)
-				} else {
-					b.lib.log.Debug("probed",
-						"path", filepath.Base(n.Path),
-						"duration", n.Info.Duration.Round(time.Second),
-						"resolution", fmt.Sprintf("%dx%d", n.Info.Width, n.Info.Height))
-				}
+				b.probeNode(n)
 			}
 		}()
 	}
@@ -531,6 +594,95 @@ func (b *builder) probeAll() {
 	}
 	close(jobs)
 	wg.Wait()
+}
+
+// probeNode fills in one video's metadata, and refuses it when a Validator says
+// it cannot be read.
+func (b *builder) probeNode(n *Node) {
+	if validate := b.lib.opts.Validate; validate != nil {
+		verdict := validate(n.Path, n.Size, n.ModTime)
+		if !verdict.Serve {
+			n.rejected = true
+			n.rejectReason = verdict.Reason
+			b.lib.log.Debug("refusing a video",
+				"path", filepath.Base(n.Path), "reason", verdict.Reason)
+			return
+		}
+		n.Info = avmeta.Info{
+			Duration: verdict.Duration,
+			Width:    verdict.Width,
+			Height:   verdict.Height,
+		}
+		if n.Info.Duration == 0 && n.Info.Width == 0 {
+			// The Validator accepted the file but had no metadata to give.
+			n.Info = avmeta.ProbeFile(n.Path)
+		}
+	} else {
+		n.Info = avmeta.ProbeFile(n.Path)
+	}
+
+	if n.Info.Duration == 0 && n.Info.Width == 0 {
+		b.lib.log.Debug("no container metadata", "path", n.Path)
+		return
+	}
+	b.lib.log.Debug("probed",
+		"path", filepath.Base(n.Path),
+		"duration", n.Info.Duration.Round(time.Second),
+		"resolution", fmt.Sprintf("%dx%d", n.Info.Width, n.Info.Height))
+}
+
+// dropRejected removes the videos a Validator refused from the tree, keeping a
+// record of them so the web page can say what was skipped and why. Runs in tree
+// order, so the list is stable between scans.
+func (b *builder) dropRejected() {
+	var walk func(*Node)
+	walk = func(n *Node) {
+		kept := n.Children[:0]
+		for _, c := range n.Children {
+			if c.Kind == KindVideo && c.rejected {
+				b.rejected = append(b.rejected, Rejected{
+					Title:   c.Title,
+					Path:    c.Path,
+					Size:    c.Size,
+					ModTime: c.ModTime,
+					Reason:  c.rejectReason,
+				})
+				continue
+			}
+			if c.Kind == KindContainer {
+				walk(c)
+			}
+			kept = append(kept, c)
+		}
+		n.Children = kept
+	}
+	walk(b.root)
+}
+
+// countVideos returns the number of videos in the published tree, which is
+// fewer than were walked whenever a Validator refused some.
+func countVideos(n *Node) int {
+	if n.Kind == KindVideo {
+		return 1
+	}
+	total := 0
+	for _, c := range n.Children {
+		total += countVideos(c)
+	}
+	return total
+}
+
+// countSubtitles returns the number of subtitle tracks attached to videos that
+// are actually being served.
+func countSubtitles(n *Node) int {
+	if n.Kind == KindVideo {
+		return len(n.Subs)
+	}
+	total := 0
+	for _, c := range n.Children {
+		total += countSubtitles(c)
+	}
+	return total
 }
 
 // countContainers returns the number of containers in the pruned tree.

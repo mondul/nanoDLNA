@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"nanodlna/internal/library"
+	"nanodlna/internal/thumb"
 	"nanodlna/internal/version"
 )
 
@@ -37,6 +38,9 @@ type Config struct {
 	SubtitleCharset string
 	// DisableSSDP suppresses SSDP announcement and discovery.
 	DisableSSDP bool
+	// Thumbnails produces the picture shown beside each video. A nil maker, or
+	// one without ffmpeg behind it, simply means no artwork is advertised.
+	Thumbnails *thumb.Maker
 }
 
 // Server is a UPnP AV MediaServer exposing a library over HTTP and SSDP.
@@ -216,6 +220,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/ConnectionManager/event", s.handleEvent)
 	s.mux.HandleFunc("/media/", s.handleMedia)
 	s.mux.HandleFunc("/subs/", s.handleSubtitle)
+	s.mux.HandleFunc("/thumb/", s.handleThumbnail)
 	s.mux.HandleFunc(iconPath, s.handleIcon)
 	s.mux.HandleFunc("/rescan", s.handleRescan)
 	s.mux.HandleFunc("/", s.handleIndex)

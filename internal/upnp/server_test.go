@@ -28,7 +28,15 @@ type testEnv struct {
 	base string
 }
 
+// newTestEnv starts a server over the standard fixture tree.
 func newTestEnv(t *testing.T) *testEnv {
+	t.Helper()
+	return newTestEnvConfig(t, nil)
+}
+
+// newTestEnvConfig starts a server over the standard fixture tree, after giving
+// the caller a chance to adjust the configuration.
+func newTestEnvConfig(t *testing.T, configure func(*Config)) *testEnv {
 	t.Helper()
 
 	dir := t.TempDir()
@@ -66,14 +74,19 @@ func newTestEnv(t *testing.T) *testEnv {
 		t.Fatalf("Scan: %v", err)
 	}
 
-	srv, err := New(Config{
+	cfg := Config{
 		Name:        "Test Server",
 		RootPath:    dir,
 		IP:          net.IPv4(127, 0, 0, 1),
 		Port:        0,
 		Logger:      logger,
 		DisableSSDP: true,
-	}, lib)
+	}
+	if configure != nil {
+		configure(&cfg)
+	}
+
+	srv, err := New(cfg, lib)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -939,6 +952,9 @@ type didlObject struct {
 	// SecTags holds the sec:CaptionInfo, sec:CaptionInfoEx and pv:subtitlefile
 	// elements.
 	SecTags []didlSubtitle
+	// ArtworkURL and ArtworkProfile come from upnp:albumArtURI.
+	ArtworkURL     string
+	ArtworkProfile string
 }
 
 type didlResource struct {
@@ -1045,7 +1061,7 @@ func parseDIDL(t *testing.T, raw string) struct{ Objects []didlObject } {
 					IsItem:   name == "item",
 				})
 				index = len(out.Objects) - 1
-			case "dc:title", "upnp:class", "res",
+			case "dc:title", "upnp:class", "res", "upnp:albumArtURI",
 				"sec:CaptionInfo", "sec:CaptionInfoEx", "pv:subtitlefile":
 				capture = name
 				captureAttrs = tk
@@ -1083,6 +1099,9 @@ func parseDIDL(t *testing.T, raw string) struct{ Objects []didlObject } {
 							Mime: strings.TrimSuffix(strings.TrimPrefix(pi, "http-get:*:"), ":*"),
 						})
 					}
+				case "upnp:albumArtURI":
+					obj.ArtworkURL = text
+					obj.ArtworkProfile = attr(captureAttrs, "dlna:profileID")
 				case "sec:CaptionInfo", "sec:CaptionInfoEx", "pv:subtitlefile":
 					obj.SecTags = append(obj.SecTags, didlSubtitle{
 						URL:  text,

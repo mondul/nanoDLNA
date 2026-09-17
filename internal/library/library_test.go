@@ -4,7 +4,9 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 )
 
 func writeFile(t *testing.T, path, content string) {
@@ -328,4 +330,172 @@ func equal(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// TestValidatorRemovesRefusedFiles is the torrent case: files that are reserved
+// but not yet readable must not reach the television.
+func TestValidatorRemovesRefusedFiles(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "Good.mkv"), "video")
+	writeFile(t, filepath.Join(dir, "Broken.mkv"), "video")
+	writeFile(t, filepath.Join(dir, "Only Refused", "Broken2.mkv"), "video")
+
+	lib := New(dir, Options{
+		Name:   "test",
+		Logger: testLogger(),
+		Validate: func(path string, size int64, mod time.Time) Verdict {
+			if strings.Contains(filepath.Base(path), "Broken") {
+				return Verdict{Serve: false, Reason: "moov atom not found"}
+			}
+			return Verdict{Serve: true, Duration: 42 * time.Minute, Width: 1920, Height: 1080}
+		},
+	})
+
+	stats, err := lib.Scan()
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+
+	if stats.Videos != 1 {
+		t.Errorf("Videos = %d, want only the readable one", stats.Videos)
+	}
+	if stats.Rejected != 2 {
+		t.Errorf("Rejected = %d, want 2", stats.Rejected)
+	}
+
+	// A folder left holding nothing but a refused file has to disappear, or the
+	// television shows a folder that plays nothing.
+	if n := find(t, lib.Root(), "Only Refused"); n != nil {
+		t.Error("a container emptied by a refusal is still in the tree")
+	}
+	for _, title := range []string{"Broken", "Broken2"} {
+		if n := find(t, lib.Root(), title); n != nil {
+			t.Errorf("refused video %q is still browsable", title)
+		}
+	}
+
+	rejected := lib.Rejected()
+	if len(rejected) != 2 {
+		t.Fatalf("Rejected() returned %d entries, want 2", len(rejected))
+	}
+	for _, r := range rejected {
+		if r.Reason != "moov atom not found" {
+			t.Errorf("%s was refused with reason %q, want the validator's words", r.Title, r.Reason)
+		}
+		if r.Path == "" || r.Size == 0 {
+			t.Errorf("%s carries no path or size for the web page to show", r.Title)
+		}
+	}
+
+	// Metadata from the validator is used as it stands, rather than probing the
+	// file a second time.
+	good := find(t, lib.Root(), "Good")
+	if good == nil {
+		t.Fatal("the readable video is missing")
+	}
+	if good.Info.Duration != 42*time.Minute {
+		t.Errorf("Duration = %v, want the validator's 42m", good.Info.Duration)
+	}
+	if good.Info.Width != 1920 || good.Info.Height != 1080 {
+		t.Errorf("resolution = %dx%d, want 1920x1080", good.Info.Width, good.Info.Height)
+	}
+}
+
+// TestNilValidatorServesEverything keeps the behaviour on a machine with no
+// ffprobe identical to what it always was.
+func TestNilValidatorServesEverything(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "a.mkv"), "video")
+	writeFile(t, filepath.Join(dir, "b.mkv"), "video")
+
+	lib := New(dir, Options{Name: "test", Logger: testLogger()})
+	stats, err := lib.Scan()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Videos != 2 {
+		t.Errorf("Videos = %d, want 2", stats.Videos)
+	}
+	if stats.Rejected != 0 {
+		t.Errorf("Rejected = %d, want 0", stats.Rejected)
+	}
+	if got := len(lib.Rejected()); got != 0 {
+		t.Errorf("Rejected() returned %d entries, want 0", got)
+	}
+}
+
+// TestRejectedListIsRebuiltOnEveryScan proves a file that becomes readable
+// reappears, which is what a rescan is for.
+func TestRejectedListIsRebuiltOnEveryScan(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "Arriving.mkv"), "video")
+
+	readable := false
+	lib := New(dir, Options{
+		Name:   "test",
+		Logger: testLogger(),
+		Validate: func(string, int64, time.Time) Verdict {
+			if readable {
+				return Verdict{Serve: true, Duration: time.Minute}
+			}
+			return Verdict{Serve: false, Reason: "Invalid data found when processing input"}
+		},
+	})
+
+	first, err := lib.Scan()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Videos != 0 || first.Rejected != 1 {
+		t.Fatalf("first scan = %d videos, %d rejected", first.Videos, first.Rejected)
+	}
+
+	readable = true
+	second, err := lib.Scan()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Videos != 1 || second.Rejected != 0 {
+		t.Errorf("second scan = %d videos, %d rejected, want the file to have appeared",
+			second.Videos, second.Rejected)
+	}
+	if n := find(t, lib.Root(), "Arriving"); n == nil {
+		t.Error("the file did not appear after it became readable")
+	}
+}
+
+// TestRefusalWithoutAReasonIsStillRefused guards a subtle way to serve a file
+// that was meant to be hidden: a Validator may refuse without explaining why,
+// so the refusal cannot be recorded as an absent reason.
+func TestRefusalWithoutAReasonIsStillRefused(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "Kept.mkv"), "video")
+	writeFile(t, filepath.Join(dir, "Dropped.mkv"), "video")
+
+	lib := New(dir, Options{
+		Name:   "test",
+		Logger: testLogger(),
+		Validate: func(path string, size int64, mod time.Time) Verdict {
+			// No Reason at all.
+			return Verdict{Serve: !strings.Contains(path, "Dropped")}
+		},
+	})
+
+	stats, err := lib.Scan()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Videos != 1 {
+		t.Errorf("Videos = %d, want 1", stats.Videos)
+	}
+	if stats.Rejected != 1 {
+		t.Errorf("Rejected = %d, want 1", stats.Rejected)
+	}
+	if n := find(t, lib.Root(), "Dropped"); n != nil {
+		t.Error("a video refused without a reason is still browsable")
+	}
+	rejected := lib.Rejected()
+	if len(rejected) != 1 || rejected[0].Title != "Dropped" {
+		t.Errorf("Rejected() = %+v, want the dropped video", rejected)
+	}
 }
