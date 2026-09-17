@@ -321,7 +321,7 @@ func (r *statusRecorder) Flush() {
 }
 
 func serverHeader() string {
-	return "Darwin/1.0 UPnP/1.0 " + version.UserAgent
+	return "Darwin/1.0 UPnP/1.0 " + version.UserAgent()
 }
 
 // deriveUDN builds a stable uuid: device name from the media root, so that
