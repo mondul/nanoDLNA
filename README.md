@@ -238,6 +238,8 @@ internal/avmeta     MP4/MOV, Matroska/WebM and AVI header parsing
 internal/library    filesystem scan, tree building, subtitle matching
 internal/didl       DIDL-Lite generation
 internal/upnp       SSDP, HTTP, SOAP, GENA, media and subtitle serving
+internal/tools      detection of the optional ffmpeg and ffprobe
+internal/cache      on-disk cache for work that is expensive to redo
 internal/version    program identity
 scripts/            commit linting and release tooling
 ```

@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"nanodlna/internal/library"
+	"nanodlna/internal/tools"
 	"nanodlna/internal/upnp"
 	"nanodlna/internal/version"
 )
@@ -67,6 +68,13 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+
+	// The external tools are optional, but knowing which are missing at start-up
+	// explains later why a feature is quiet rather than broken.
+	external := tools.Detect(context.Background())
+	logger.Debug("external tools",
+		"ffprobe", describeTool(external.FFprobe),
+		"ffmpeg", describeTool(external.FFmpeg))
 
 	root, err := filepath.Abs(opts.dir)
 	if err != nil {
@@ -326,6 +334,17 @@ func isAddrInUse(err error) bool {
 // hostname reads the machine's host name. It is a variable so that a test can
 // make it fail without needing a machine whose host name is broken.
 var hostname = os.Hostname
+
+// describeTool renders a detected program for a log line.
+func describeTool(t *tools.Tool) string {
+	if t == nil {
+		return "not found"
+	}
+	if t.Version == "" {
+		return t.Path
+	}
+	return t.Version
+}
 
 // deviceName returns the name advertised to players.
 //
