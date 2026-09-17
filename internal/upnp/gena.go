@@ -95,12 +95,16 @@ func (s *Server) handleSubscribe(w http.ResponseWriter, r *http.Request, service
 	}
 	s.subsMu.Lock()
 	s.subs[sid] = sub
+	// Take a private copy while the lock is held: notifySubscribers mutates the
+	// stored subscription's sequence number, so the initial event must not
+	// share it.
+	initial := *sub
 	s.subsMu.Unlock()
 
 	// The response must reach the client before the initial event, so the event
 	// is pushed from a separate goroutine.
 	writeSubscribeResponse(w, sid, timeout)
-	go s.sendEvent(sub, s.initialEventBody(service))
+	go s.sendEvent(&initial, s.initialEventBody(service))
 }
 
 func (s *Server) handleUnsubscribe(w http.ResponseWriter, r *http.Request) {
