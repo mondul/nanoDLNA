@@ -48,8 +48,14 @@ the subtitle menu will already list the `.srt` files sitting next to it.
 To build it:
 
 ```sh
-go build -o nanoDLNA .          # or: make
+make build
 ```
+
+Use `make build` rather than a bare `go build`. It stamps the version derived
+from the git tag into the binary with `-ldflags`, so `nanoDLNA -version` matches
+the release. A plain `go build` produces a binary reporting the development
+default from `internal/version/version.go`, which is not the tag, and that is
+easy to mistake for a stale build.
 
 ## How the subtitles work
 
@@ -213,9 +219,11 @@ immediately.
 ## Development
 
 ```sh
+make build       # build ./nanoDLNA with the version stamped in
 make test        # go test ./...
 make race        # go test -race ./...
-make check       # gofmt, go vet, tests
+make check       # gofmt, go vet, tests, and the stale-binary check
+make stale       # only the stale-binary check
 make lint        # check that the commits follow Conventional Commits
 make hooks       # install the commit-msg hook in this clone
 make cross       # build the five release targets into dist/
