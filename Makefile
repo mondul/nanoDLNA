@@ -16,7 +16,7 @@ LDFLAGS := -s -w -X $(MODULE)/internal/version.Version=$(VERSION)
 # The platforms a release ships, matching .github/workflows/release.yml.
 PLATFORMS := linux/amd64 linux/arm64 darwin/arm64 windows/amd64 windows/arm64
 
-.PHONY: all build test race vet fmt check lint hooks cross clean run tidy print-version $(PLATFORMS)
+.PHONY: all build test race vet fmt check lint hooks stale cross clean run tidy print-version $(PLATFORMS)
 
 all: build
 
@@ -38,8 +38,23 @@ vet:
 fmt:
 	gofmt -l -w .
 
-# check fails if any file needs reformatting.
-check:
+# stale fails when the built binary is older than the sources it was built from,
+# which is how a stale artefact ends up being run by mistake. A binary that has
+# not been built at all is only noted, not treated as an error.
+stale:
+	@if [ ! -e $(BINARY) ]; then \
+		echo "$(BINARY) has not been built yet; run make build"; \
+		exit 0; \
+	fi; \
+	newer=$$(find . -type f \( -name '*.go' -o -name 'go.mod' \) ! -name '*_test.go' -newer $(BINARY) -print -quit 2>/dev/null); \
+	if [ -n "$$newer" ]; then \
+		echo "$(BINARY) is older than $$newer; run make build"; \
+		exit 1; \
+	fi; \
+	echo "$(BINARY) is newer than every source file"
+
+# check fails if any file needs reformatting or the local binary is stale.
+check: stale
 	@out=$$(gofmt -l .); if [ -n "$$out" ]; then echo "not gofmt'd:"; echo "$$out"; exit 1; fi
 	go vet ./...
 	go test -count=1 ./...
