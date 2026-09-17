@@ -39,7 +39,7 @@ jobs:
 
     steps:
       - name: Check out the full history and every tag
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           # The next version is derived from the tags and the commits since the
           # last one, so a shallow clone would get it wrong.
@@ -63,9 +63,9 @@ jobs:
     if: needs.plan.outputs.release == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           check-latest: true
@@ -85,6 +85,28 @@ jobs:
       - name: Test
         run: go test -race ./...
 
+      - name: Check the release version can be injected
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          # The artifacts are built for other platforms and cannot be executed
+          # here, so prove the mechanism once on a binary that can be run. The
+          # build matrix uses exactly the same ldflags, and upload-artifact is
+          # configured to fail the job if a binary is missing.
+          go build -trimpath \
+            -ldflags "-s -w -X nanodlna/internal/version.Version=${VERSION}" \
+            -o /tmp/nanoDLNA .
+          reported=$(/tmp/nanoDLNA -version)
+          echo "built with -X nanodlna/internal/version.Version=${VERSION}, which reports: ${reported}"
+          case "$reported" in
+            *"${VERSION}") ;;
+            *)
+              echo "::error::expected the binary to report ${VERSION}, got '${reported}'"
+              exit 1
+              ;;
+          esac
+
   build:
     name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
     needs: [plan, verify]
@@ -100,9 +122,9 @@ jobs:
           - { goos: windows, goarch: amd64, ext: .exe }
           - { goos: windows, goarch: arm64, ext: .exe }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           check-latest: true
@@ -119,19 +141,6 @@ jobs:
           go build -trimpath \
             -ldflags "-s -w -X nanodlna/internal/version.Version=${VERSION}" \
             -o "dist/nanoDLNA${{ matrix.ext }}" .
-
-      - name: Check the version really was injected
-        env:
-          VERSION: ${{ needs.plan.outputs.version }}
-        run: |
-          set -euo pipefail
-          # The binary is for another platform and cannot be executed here, so
-          # look for the version string the UPnP SERVER header is built from.
-          binary="dist/nanoDLNA${{ matrix.ext }}"
-          if ! grep -aqF "nanoDLNA/${VERSION}" "$binary"; then
-            echo "::error::$binary does not contain nanoDLNA/${VERSION}"
-            exit 1
-          fi
 
       - name: Package
         env:
@@ -154,7 +163,7 @@ jobs:
             rm -rf "${name}"
           )
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: nanoDLNA-${{ matrix.goos }}-${{ matrix.goarch }}
           path: package/*
@@ -166,13 +175,13 @@ jobs:
     if: needs.plan.outputs.release == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # The notes are generated from the log, so the history is needed here
           # too.
           fetch-depth: 0
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v7
         with:
           path: dist
           merge-multiple: true
