@@ -6,6 +6,8 @@ name: Commit messages
 on:
   push:
   pull_request:
+  # A manual run checks the whole history, which is useful after rewriting it.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -46,3 +48,7 @@ jobs:
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
         run: ./scripts/commit-lint.sh "${BASE}..${HEAD}"
+
+      - name: Check the whole history
+        if: github.event_name == 'workflow_dispatch'
+        run: ./scripts/commit-lint.sh --all

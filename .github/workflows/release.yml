@@ -6,6 +6,9 @@ name: Release
 on:
   push:
     branches: [main]
+  # A release can also be cut by hand, which is useful for re-running one that
+  # failed after its commits were already pushed.
+  workflow_dispatch:
 
 # Creating the tag and the release needs write access to the repository.
 permissions:
