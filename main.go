@@ -86,10 +86,7 @@ func run(args []string) error {
 	}
 	logger.Debug("using local address", "ip", ip.String(), "source", source)
 
-	name := opts.name
-	if name == "" {
-		name = version.Name
-	}
+	name := deviceName(opts.name, logger)
 
 	lib := library.New(root, library.Options{
 		Name:    name,
@@ -151,7 +148,7 @@ func run(args []string) error {
 		}
 	}
 
-	printBanner(srv, root, stats, opts, logger)
+	printBanner(srv, root, stats, name, opts.noSSDP, logger)
 
 	select {
 	case <-ctx.Done():
@@ -170,7 +167,7 @@ func parseFlags(args []string) (options, bool, error) {
 	opts := options{dir: "."}
 
 	fs := flag.NewFlagSet(version.Name, flag.ExitOnError)
-	fs.StringVar(&opts.name, "name", version.Name, "name shown on the television")
+	fs.StringVar(&opts.name, "name", "", `name shown on the television (default "nanoDLNA [host name]")`)
 	fs.IntVar(&opts.port, "port", 8200, "HTTP port to listen on; 0 lets the system choose")
 	fs.StringVar(&opts.iface, "iface", "", "network interface name or local IP address to advertise (default: auto)")
 	fs.StringVar(&opts.subLang, "sub-lang", "", "preferred subtitle languages, most preferred first, for example \"it,en\"")
@@ -326,18 +323,45 @@ func isAddrInUse(err error) bool {
 	return errors.Is(err, syscall.EADDRINUSE) || strings.Contains(err.Error(), "address already in use")
 }
 
-func printBanner(srv *upnp.Server, root string, stats library.Stats, opts options, logger *slog.Logger) {
+// hostname reads the machine's host name. It is a variable so that a test can
+// make it fail without needing a machine whose host name is broken.
+var hostname = os.Hostname
+
+// deviceName returns the name advertised to players.
+//
+// Without -name it is "nanoDLNA [host]", which is what tells two servers apart
+// in a player's list when more than one is running on a network. A host name
+// that cannot be read is not worth refusing to start over, so it is reported as
+// a warning and the plain name is used instead.
+func deviceName(custom string, logger *slog.Logger) string {
+	if custom != "" {
+		return custom
+	}
+
+	host, err := hostname()
+	if err != nil {
+		logger.Warn("could not get host name, using the plain name instead", "err", err)
+		return version.Name
+	}
+	if host = strings.TrimSpace(host); host == "" {
+		logger.Warn("could not get host name, using the plain name instead", "err", "the host name is empty")
+		return version.Name
+	}
+	return fmt.Sprintf("%s [%s]", version.Name, host)
+}
+
+func printBanner(srv *upnp.Server, root string, stats library.Stats, name string, noSSDP bool, logger *slog.Logger) {
 	base := srv.BaseURL()
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "\n  %s %s\n", version.Name, version.Version)
 	fmt.Fprintf(&b, "  %s\n\n", strings.Repeat("\u2500", 46))
 	fmt.Fprintf(&b, "  Media folder  %s\n", root)
-	fmt.Fprintf(&b, "  Device name   %s\n", opts.name)
+	fmt.Fprintf(&b, "  Device name   %s\n", name)
 	fmt.Fprintf(&b, "  Library       %d videos, %d folders, %d subtitles\n",
 		stats.Videos, stats.Containers, stats.Subtitles)
 	fmt.Fprintf(&b, "  Address       %s\n", base)
-	if opts.noSSDP {
+	if noSSDP {
 		fmt.Fprintf(&b, "  Discovery     SSDP disabled\n")
 	} else {
 		fmt.Fprintf(&b, "  Discovery     SSDP multicast, port 1900\n")
@@ -349,7 +373,7 @@ func printBanner(srv *upnp.Server, root string, stats library.Stats, opts option
 		fmt.Fprintf(&b, "  \"Rescan folder\" on the web page below.\n\n")
 	}
 
-	fmt.Fprintf(&b, "  On the TV      VLC \u2192 Local Network \u2192 %s\n", opts.name)
+	fmt.Fprintf(&b, "  On the TV      VLC \u2192 Local Network \u2192 %s\n", name)
 	fmt.Fprintf(&b, "  Web page       %s\n", base)
 	fmt.Fprintf(&b, "  Stop           Ctrl+C\n\n")
 

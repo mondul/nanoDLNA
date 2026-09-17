@@ -135,7 +135,7 @@ does not show directories with nothing to play.
 ```
 nanoDLNA [options] [folder]
 
-  -name string       name shown on the television (default "nanoDLNA")
+  -name string       name shown on the television (default "nanoDLNA [host name]")
   -port int          HTTP port; 0 lets the system choose (default 8200)
   -iface string      network interface name or local IP to advertise
   -sub-lang string   preferred subtitle languages, e.g. "it,en"
@@ -154,6 +154,11 @@ nanoDLNA -log debug                    # see every browse request and play
 nanoDLNA -port 0                       # let the OS pick the HTTP port
 nanoDLNA -iface en0                    # pin announcements to one interface
 ```
+
+Without `-name` the server is listed as `nanoDLNA [host name]`, so that two
+machines running it on the same network can be told apart in the player's list.
+If the host name cannot be read, nanoDLNA says so and falls back to plain
+`nanoDLNA`.
 
 There is also a small web page on the printed address, which lists every video
 with its subtitles, links directly to the streams, and has a **Rescan folder**

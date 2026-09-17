@@ -1,6 +1,10 @@
 package main
 
 import (
+	"bytes"
+	"errors"
+	"io"
+	"log/slog"
 	"strings"
 	"testing"
 )
@@ -138,5 +142,69 @@ func TestParseFlagsDefaults(t *testing.T) {
 	}
 	if portSet {
 		t.Error("portSet should be false by default")
+	}
+	// An unset -name is what selects the host-name form, so the default has to
+	// stay empty rather than being filled in with the plain program name.
+	if opts.name != "" {
+		t.Errorf("name = %q, want empty so that the host name is used", opts.name)
+	}
+}
+
+func TestDeviceName(t *testing.T) {
+	original := hostname
+	t.Cleanup(func() { hostname = original })
+
+	for _, tc := range []struct {
+		what     string
+		custom   string
+		host     string
+		hostErr  error
+		want     string
+		wantWarn bool
+	}{
+		{"a custom name is used verbatim", "Living Room", "MyMac", nil, "Living Room", false},
+		{"the host name is appended", "", "MyMac", nil, "nanoDLNA [MyMac]", false},
+		{"the host name is trimmed", "", "  MyMac  ", nil, "nanoDLNA [MyMac]", false},
+		{"a failure falls back to the plain name", "", "", errors.New("boom"), "nanoDLNA", true},
+		{"an empty host name falls back", "", "   ", nil, "nanoDLNA", true},
+	} {
+		t.Run(tc.what, func(t *testing.T) {
+			var logged bytes.Buffer
+			logger := slog.New(slog.NewTextHandler(&logged, nil))
+			hostname = func() (string, error) { return tc.host, tc.hostErr }
+
+			if got := deviceName(tc.custom, logger); got != tc.want {
+				t.Errorf("deviceName() = %q, want %q", got, tc.want)
+			}
+
+			warned := strings.Contains(logged.String(), "level=WARN")
+			if warned != tc.wantWarn {
+				t.Errorf("warning logged = %v, want %v (log: %q)", warned, tc.wantWarn, logged.String())
+			}
+			if tc.wantWarn && tc.hostErr != nil && !strings.Contains(logged.String(), tc.hostErr.Error()) {
+				t.Errorf("the warning does not mention the error: %q", logged.String())
+			}
+		})
+	}
+}
+
+// TestDeviceNameDoesNotReadTheHostNameForACustomName keeps the fallback from
+// becoming a cost paid on every start for people who name their server.
+func TestDeviceNameDoesNotReadTheHostNameForACustomName(t *testing.T) {
+	original := hostname
+	t.Cleanup(func() { hostname = original })
+
+	called := false
+	hostname = func() (string, error) {
+		called = true
+		return "MyMac", nil
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	if got := deviceName("Living Room", logger); got != "Living Room" {
+		t.Errorf("deviceName() = %q, want the custom name", got)
+	}
+	if called {
+		t.Error("the host name was read even though -name was given")
 	}
 }
