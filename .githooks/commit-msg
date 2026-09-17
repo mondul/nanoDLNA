@@ -1,0 +1,14 @@
+#!/bin/sh
+#
+# Rejects a commit whose message does not follow Conventional Commits, before
+# the commit exists at all. This is the only place a message can be refused
+# outright: GitHub cannot inspect a message at push time, so CI can only report
+# a violation after the fact.
+#
+# Enable it once per clone:
+#
+#     make hooks
+#
+# Bypass it for one commit with: git commit --no-verify
+
+exec "$(git rev-parse --show-toplevel)/scripts/commit-lint.sh" --message-file "$1"

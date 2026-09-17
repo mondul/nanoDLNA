@@ -211,7 +211,9 @@ immediately.
 make test        # go test ./...
 make race        # go test -race ./...
 make check       # gofmt, go vet, tests
-make cross       # build for macOS, Linux and Windows
+make lint        # check that the commits follow Conventional Commits
+make hooks       # install the commit-msg hook in this clone
+make cross       # build the five release targets into dist/
 ```
 
 The test suite includes a faithful reimplementation of VLC's subtitle-collection
@@ -224,9 +226,69 @@ internal/library    filesystem scan, tree building, subtitle matching
 internal/didl       DIDL-Lite generation
 internal/upnp       SSDP, HTTP, SOAP, GENA, media and subtitle serving
 internal/version    program identity
+scripts/            commit linting and release tooling
 ```
 
 Requires Go 1.22 or newer. The only imports are the standard library.
+
+## Releases
+
+Pushing to `main` runs `.github/workflows/release.yml`, which builds and
+publishes a release when the push contains something worth releasing.
+
+**The version number is derived from the commit messages**, so every commit must
+follow [Conventional Commits](https://www.conventionalcommits.org/):
+
+```
+<type>[optional scope][!]: <description>
+
+feat(player): add gapless playback
+fix: stop the scan from following symlinks
+feat(api)!: drop the v1 endpoints
+```
+
+The types are `feat`, `fix`, `build`, `chore`, `ci`, `docs`, `style`,
+`refactor`, `perf`, `test` and `revert`. A breaking change is marked with `!`
+before the colon or a `BREAKING CHANGE:` footer.
+
+| Commits since the last tag | Next version |
+| --- | --- |
+| any breaking change | major, `1.4.2` → `2.0.0` |
+| any `feat` | minor, `1.4.2` → `1.5.0` |
+| any `fix`, `perf` or `revert` | patch, `1.4.2` → `1.4.3` |
+| only `docs`, `chore`, `test`, `ci`, `build`, `refactor` | no release |
+
+The first release is `1.0.0`, because there is no baseline to bump from. The
+number is injected at link time rather than committed back, so the source
+default of `1.0.0` is only a development placeholder and no bot commits appear
+in the history. `make print-version` shows what a local build will report.
+
+Each release carries a binary for **Linux x86-64 and ARM64, macOS ARM64, and
+Windows x86-64 and ARM64** as `.tar.gz` or `.zip`, with `README.md`, `LICENSE`
+and a `SHA256SUMS` file. The notes list every commit grouped by type, with the
+full commit message, so a release says what actually changed rather than only
+naming the commits.
+
+To skip the workflow for a push, put `[skip ci]` in the commit message. GitHub
+honours that itself, and the workflow checks for it too.
+
+### Keeping the messages honest
+
+Three things enforce the format, at different moments:
+
+- **`make hooks`** installs a `commit-msg` hook that refuses a commit outright.
+  This is the only place a message can be rejected *before* it exists, and it is
+  per clone: run it once after cloning, or accept that a bad message is only
+  caught afterwards.
+- **The Commit messages workflow** checks every push and pull request, so a
+  message that slipped past the hook shows up red.
+- **A ruleset** is what makes GitHub refuse the push itself. A workflow cannot:
+  by the time it runs, the push has already been accepted. To get a hard
+  rejection, protect `main` and require the `Conventional Commits` check, which
+  also means changes arrive through pull requests instead of direct pushes.
+
+The release workflow and the hook run the same `scripts/commit-lint.sh`, so they
+can never disagree about what a valid message is.
 
 ## License
 

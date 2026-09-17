@@ -1,0 +1,209 @@
+name: Release
+
+# Runs on every push to main. The plan job decides whether the push contains
+# anything worth releasing: a feature, a fix or a breaking change does,
+# documentation and chores on their own do not.
+on:
+  push:
+    branches: [main]
+
+# Creating the tag and the release needs write access to the repository.
+permissions:
+  contents: write
+
+# Two pushes in quick succession must not race for the same tag.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Plan the next version
+    runs-on: ubuntu-latest
+
+    # GitHub skips the run by itself when the head commit uses the [skip ci]
+    # family of tokens. This is a second, visible guard so the rule is obvious
+    # from reading the workflow.
+    if: >-
+      !contains(github.event.head_commit.message, '[skip ci]') &&
+      !contains(github.event.head_commit.message, '[ci skip]') &&
+      !contains(github.event.head_commit.message, '[no ci]')
+
+    outputs:
+      release: ${{ steps.version.outputs.release }}
+      version: ${{ steps.version.outputs.version }}
+      reason: ${{ steps.version.outputs.reason }}
+
+    steps:
+      - name: Check out the full history and every tag
+        uses: actions/checkout@v4
+        with:
+          # The next version is derived from the tags and the commits since the
+          # last one, so a shallow clone would get it wrong.
+          fetch-depth: 0
+
+      - name: Decide the next version
+        id: version
+        run: ./scripts/release.sh next-version >> "$GITHUB_OUTPUT"
+
+      - name: Report the decision
+        run: |
+          if [ "${{ steps.version.outputs.release }}" = "true" ]; then
+            echo "Releasing v${{ steps.version.outputs.version }}: ${{ steps.version.outputs.reason }}" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Nothing to release. ${{ steps.version.outputs.reason }}" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  verify:
+    name: Verify
+    needs: plan
+    if: needs.plan.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      - name: Check formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "these files are not gofmt'd:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -race ./...
+
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: [plan, verify]
+    if: needs.plan.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
+          - { goos: darwin, goarch: arm64 }
+          - { goos: windows, goarch: amd64, ext: .exe }
+          - { goos: windows, goarch: arm64, ext: .exe }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: '0'
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          go build -trimpath \
+            -ldflags "-s -w -X nanodlna/internal/version.Version=${VERSION}" \
+            -o "dist/nanoDLNA${{ matrix.ext }}" .
+
+      - name: Check the version really was injected
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          # The binary is for another platform and cannot be executed here, so
+          # look for the version string the UPnP SERVER header is built from.
+          binary="dist/nanoDLNA${{ matrix.ext }}"
+          if ! grep -aqF "nanoDLNA/${VERSION}" "$binary"; then
+            echo "::error::$binary does not contain nanoDLNA/${VERSION}"
+            exit 1
+          fi
+
+      - name: Package
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          set -euo pipefail
+          name="nanoDLNA-${VERSION}-${GOOS}-${GOARCH}"
+          mkdir -p "package/${name}"
+          cp "dist/nanoDLNA${{ matrix.ext }}" "package/${name}/"
+          cp README.md LICENSE "package/${name}/"
+          (
+            cd package
+            if [ "$GOOS" = "windows" ]; then
+              zip -q -r "${name}.zip" "${name}"
+            else
+              tar -czf "${name}.tar.gz" "${name}"
+            fi
+            rm -rf "${name}"
+          )
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nanoDLNA-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: package/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish the release
+    needs: [plan, build]
+    if: needs.plan.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The notes are generated from the log, so the history is needed here
+          # too.
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Write the release notes
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+          REASON: ${{ needs.plan.outputs.reason }}
+        run: |
+          set -euo pipefail
+          {
+            echo "# nanoDLNA v${VERSION}"
+            echo
+            echo "_${REASON}._"
+            echo
+            ./scripts/release.sh notes "$VERSION"
+          } > RELEASE_NOTES.md
+          echo "RELEASE_NOTES.md is $(wc -l < RELEASE_NOTES.md) lines"
+
+      - name: Checksums
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum nanoDLNA-* > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Create the tag and the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          gh release create "v${VERSION}" \
+            --title "nanoDLNA v${VERSION}" \
+            --notes-file RELEASE_NOTES.md \
+            --target "$GITHUB_SHA" \
+            dist/*

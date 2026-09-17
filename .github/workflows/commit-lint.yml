@@ -1,0 +1,48 @@
+name: Commit messages
+
+# Every push and every pull request is checked, because the release workflow
+# derives the version number from these messages: a commit that does not follow
+# Conventional Commits is a commit the release cannot understand.
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  conventional-commits:
+    name: Conventional Commits
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The range being checked spans commits that may not be in a shallow
+          # clone, so fetch everything.
+          fetch-depth: 0
+
+      - name: Check the commits in this push
+        if: github.event_name == 'push'
+        env:
+          BEFORE: ${{ github.event.before }}
+          AFTER: ${{ github.event.after }}
+        run: |
+          set -euo pipefail
+          # A brand new branch arrives with an all-zero "before", and a forced
+          # push can point at a commit that no longer exists. In both cases fall
+          # back to checking everything reachable from HEAD.
+          if [ -z "$BEFORE" ] \
+            || [ "$BEFORE" = "0000000000000000000000000000000000000000" ] \
+            || ! git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+            echo "no usable previous commit, checking the whole history"
+            ./scripts/commit-lint.sh --all
+          else
+            ./scripts/commit-lint.sh "${BEFORE}..${AFTER}"
+          fi
+
+      - name: Check the commits in this pull request
+        if: github.event_name == 'pull_request'
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: ./scripts/commit-lint.sh "${BASE}..${HEAD}"
