@@ -31,6 +31,16 @@ cd /path/to/your/movies
 nanoDLNA
 ```
 
+Or point it at a folder, which makes it possible to **drag a folder onto the
+executable** and have nanoDLNA serve it:
+
+```sh
+nanoDLNA /path/to/your/movies
+```
+
+With no argument the folder you are standing in is served. Either way the
+address to open on the television is printed at start-up.
+
 Then on the television open **VLC → Local Network** (sometimes called *Browse* →
 *Local Network* → *Universal Plug'n'Play*) and pick **nanoDLNA**. Open a film and
 the subtitle menu will already list the `.srt` files sitting next to it.
@@ -125,7 +135,6 @@ does not show directories with nothing to play.
 ```
 nanoDLNA [options] [folder]
 
-  -dir string        folder to serve (the current folder by default)
   -name string       name shown on the television (default "nanoDLNA")
   -port int          HTTP port; 0 lets the system choose (default 8200)
   -iface string      network interface name or local IP to advertise
@@ -140,7 +149,7 @@ Useful variations:
 
 ```sh
 nanoDLNA ~/Films                       # serve another folder
-nanoDLNA -name "Living Room" -sub-lang it,en
+nanoDLNA -name "Living Room" ~/Films   # options come before the folder
 nanoDLNA -log debug                    # see every browse request and play
 nanoDLNA -port 0                       # let the OS pick the HTTP port
 nanoDLNA -iface en0                    # pin announcements to one interface

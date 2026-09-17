@@ -1,14 +1,17 @@
-// Command nanoDLNA serves the folder it is started in over DLNA/UPnP so that a
-// television can browse and play the videos it contains, together with their
-// external subtitle files.
+// Command nanoDLNA serves a folder of videos over DLNA/UPnP so that a
+// television can browse and play them, together with their external subtitle
+// files.
 //
 // Run it inside the folder that holds the films:
 //
 //	nanoDLNA
 //
-// and the library is published under the friendly name nanoDLNA. Use -dir to
-// serve a different folder, -name to change the name shown on the television,
-// and -h for the full list of options.
+// or name the folder, which is also what dragging one onto the program does:
+//
+//	nanoDLNA /path/to/films
+//
+// The library is published under the friendly name nanoDLNA. Use -name to change
+// the name shown on the television and -h for the full list of options.
 package main
 
 import (
@@ -163,10 +166,10 @@ func run(args []string) error {
 }
 
 func parseFlags(args []string) (options, bool, error) {
-	var opts options
+	// With no folder argument the folder the program was started in is served.
+	opts := options{dir: "."}
 
 	fs := flag.NewFlagSet(version.Name, flag.ExitOnError)
-	fs.StringVar(&opts.dir, "dir", ".", "folder to serve (the current folder by default)")
 	fs.StringVar(&opts.name, "name", version.Name, "name shown on the television")
 	fs.IntVar(&opts.port, "port", 8200, "HTTP port to listen on; 0 lets the system choose")
 	fs.StringVar(&opts.iface, "iface", "", "network interface name or local IP address to advertise (default: auto)")
@@ -179,9 +182,10 @@ func parseFlags(args []string) (options, bool, error) {
 	fs.Usage = func() {
 		out := fs.Output()
 		fmt.Fprintf(out, "%s %s - DLNA media server for a folder of videos\n\n", version.Name, version.Version)
-		fmt.Fprintf(out, "Usage:\n  %s [options]\n\n", version.Name)
-		fmt.Fprintf(out, "Run it inside the folder that holds your videos; every .mp4 or .mkv is\n")
-		fmt.Fprintf(out, "published together with any matching .srt subtitle file.\n\nOptions:\n")
+		fmt.Fprintf(out, "Usage:\n  %s [options] [folder]\n\n", version.Name)
+		fmt.Fprintf(out, "Every .mp4 or .mkv in the folder is published, together with any matching\n")
+		fmt.Fprintf(out, ".srt subtitle file. With no folder the one you are standing in is served,\n")
+		fmt.Fprintf(out, "and dragging a folder onto the program passes it as this argument.\n\nOptions:\n")
 		fs.PrintDefaults()
 		fmt.Fprintf(out, `
 Subtitle matching:
@@ -201,13 +205,18 @@ Troubleshooting:
 	if err := fs.Parse(args); err != nil {
 		return options{}, false, err
 	}
-	if fs.NArg() > 0 {
-		// Allow "nanoDLNA /path/to/movies" as a shorthand for -dir.
-		if fs.NArg() == 1 {
-			opts.dir = fs.Arg(0)
-		} else {
-			return options{}, false, fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
-		}
+
+	switch fs.NArg() {
+	case 0:
+		// Serve the current folder.
+	case 1:
+		opts.dir = fs.Arg(0)
+	default:
+		// flag stops parsing at the first non-flag argument, so options placed
+		// after the folder land here as extra arguments.
+		return options{}, false, fmt.Errorf(
+			"only one folder can be served and options must come before it; got: %s",
+			strings.Join(fs.Args(), " "))
 	}
 
 	portSet := false
