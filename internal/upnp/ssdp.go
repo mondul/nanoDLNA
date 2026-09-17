@@ -163,10 +163,10 @@ func (s *ssdpService) readLoop() {
 		if n == 0 || from == nil {
 			continue
 		}
-		if from.IP.Equal(s.ip) {
-			continue // our own announcement
-		}
 		pkt := string(buf[:n])
+		// Only searches are answered. Our own announcements are NOTIFY packets,
+		// so they need no special filtering, and a player running on this very
+		// machine must still be able to discover the server.
 		if !strings.HasPrefix(pkt, "M-SEARCH") {
 			continue
 		}
