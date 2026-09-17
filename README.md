@@ -218,3 +218,7 @@ internal/version    program identity
 ```
 
 Requires Go 1.22 or newer. The only imports are the standard library.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
