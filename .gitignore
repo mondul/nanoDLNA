@@ -1,0 +1,14 @@
+# Build output
+/nanoDLNA
+/nanoDLNA.exe
+/dist/
+
+# Go workspace files
+go.work
+go.work.sum
+
+# Editor and OS noise
+.DS_Store
+*.swp
+.idea/
+.vscode/
